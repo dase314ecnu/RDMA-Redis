@@ -47,6 +47,9 @@
 #include <netinet/in.h>
 #include <lua.h>
 #include <signal.h>
+#include <stdbool.h>
+#include "cuckootable.h"
+
 
 typedef long long mstime_t; /* millisecond time type. */
 
@@ -79,7 +82,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDIS_DEFAULT_HZ        10      /* Time interrupt calls/sec. */
 #define REDIS_MIN_HZ            1
 #define REDIS_MAX_HZ            500
-#define REDIS_SERVERPORT        10086    /* TCP port */
+#define REDIS_SERVERPORT        7001    /* TCP port */
 #define REDIS_TCP_BACKLOG       511     /* TCP listen backlog */
 #define REDIS_MAXIDLETIME       0       /* default client timeout: infinite */
 #define REDIS_DEFAULT_DBNUM     16
@@ -561,11 +564,16 @@ typedef struct redisClient {
     dict *pubsub_channels;  /* channels a client is interested in (SUBSCRIBE) */
     list *pubsub_patterns;  /* patterns a client is interested in (SUBSCRIBE) */
     sds peerid;             /* Cached peer ID. */
+    int qp_id;              /* Owned qp id. */
 
     /* Response buffer */
     int bufpos;
-    char buf[REDIS_REPLY_CHUNK_BYTES];
+    char buf[MSG_SIZE];
+
 } redisClient;
+int t_data[WORKER_NUM];
+
+
 
 typedef struct rdmaRequest {
 
@@ -940,6 +948,7 @@ struct redisServer {
     int assert_line;
     int bug_report_start; /* True if bug report header was already logged. */
     int watchdog_period;  /* Software watchdog period in ms. 0 = off */
+    cuckoo_table *tbl;
 };
 
 typedef struct pubsubPattern {
@@ -1055,6 +1064,7 @@ void redisSetProcTitle(char *title);
 
 /* networking.c -- Networking and Client related operations */
 redisClient *createClient(int fd);
+redisClient *createClient_(int fd, int db_id);
 rdmaRequest *createRequest();
 void closeTimedoutClients(void);
 void freeClient(redisClient *c);
@@ -1074,6 +1084,7 @@ void addReplyBulkCString(redisClient *c, char *s);
 void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
 void addReplyBulkLongLong(redisClient *c, long long ll);
 void addReply(redisClient *c, robj *obj);
+void addReply_(redisClient *c, robj *obj,bool is_last);
 void addReplySds(redisClient *c, sds s);
 void addReplyError(redisClient *c, char *err);
 void addReplyStatus(redisClient *c, char *status);
@@ -1104,6 +1115,7 @@ int clientsArePaused(void);
 int processEventsWhileBlocked(void);
 /*rdma func*/
 void processEvents(redisClient *c);
+int processEventOnce(void *task_id_);
 
 #ifdef __GNUC__
 void addReplyErrorFormat(redisClient *c, const char *fmt, ...)
@@ -1143,6 +1155,7 @@ void touchWatchedKeysOnFlush(int dbid);
 void discardTransaction(redisClient *c);
 void flagTransaction(redisClient *c);
 
+int processMultibulkBuffer(redisClient *c);
 /* Redis object implementation */
 void decrRefCount(robj *o);
 void decrRefCountVoid(void *o);

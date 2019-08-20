@@ -299,8 +299,8 @@ int dictRehashMilliseconds(dict *d, int ms) {
     long long start = timeInMilliseconds();
     int rehashes = 0;
 
-    while(dictRehash(d,100)) {
-        rehashes += 100;
+    while(dictRehash(d,1000)) {
+        rehashes += 1000;
         if (timeInMilliseconds()-start > ms) break;
     }
     return rehashes;
@@ -315,7 +315,7 @@ int dictRehashMilliseconds(dict *d, int ms) {
  * dictionary so that the hash table automatically migrates from H1 to H2
  * while it is actively used. */
 static void _dictRehashStep(dict *d) {
-    if (d->iterators == 0) dictRehash(d,1);
+    if (d->iterators == 0) dictRehash(d,5);
 }
 
 /* Add an element to the target hash table */

@@ -55,7 +55,6 @@ struct resources res;
 int nn = 0;
 pthread_mutex_t mutexsum;
 char *data, *cmd;
-long long meanlat = 0;
 
 static struct config {
     aeEventLoop *el;
@@ -218,7 +217,7 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     /* Calculate latency only for the first read event. This means that the
      * server already sent the reply and we need to parse it. Parsing overhead
      * is not part of the latency, so calculate it only once, here. */
-    if (c->latency < 0) c->latency = mstime()-(c->start);
+    if (c->latency < 0) c->latency = ustime()-(c->start);
 
     if (redisBufferRead(c->context) != REDIS_OK) {
         fprintf(stderr,"Error: %s\n",c->context->errstr);
@@ -283,7 +282,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 
         /* Really initialize: randomize keys and set start time. */
         if (config.randomkeys) randomizeClientKey(c);
-        c->start = mstime();
+        c->start = ustime();
         c->latency = -1;
     }
 
@@ -467,34 +466,30 @@ static void showLatencyReport(void) {
     float perc, reqpersec, curlat;
 
 
-//    reqpersec = (float)(config.requests_finished/((float)config.totlatency/1000));
+    reqpersec = (float)(config.requests_finished/((float)config.totlatency/1000));
 //    printf("%ld requests per second\n\n", reqpersec);
 //    printf("((float)config.totlatency %ld %ld",(float)config.requests_finished,((float)config.totlatency));
     if (1) {
         printf("====== %s ======\n", config.title);
-//        printf("  %d requests completed in %.2f seconds\n", config.requests_finished,
-//              ((float)config.totlatency/1000));
+        printf("  %d requests completed in %.2f seconds\n", config.requests_finished,
+              ((float)config.totlatency/1000));
         printf("  %d parallel clients\n", WORKER_NUM);
         printf("  %d bytes payload\n", config.datasize);
         printf("  keep alive: %d\n", WORKER_NUM);
         printf("\n");
 
-
-        int n = 0;
+        long long meanlat = 0;
 //        qsort(config.latency,config.requests,sizeof(long long),compareLatency);
         for (i = 0; i < config.requests; i++) {
 //            if (config.latency[i]/1000 != curlat /*|| i == (1)*/) {
-            if(config.latency[i]!=0)
-            {
                 meanlat += config.latency[i];
-            }
-
-//                printf("latency is %ld \n", config.latency[1]);
+//                printf("latency is %ld \n", config.latency[i]);
 //                meanlat += curlat;
 //                perc = ((float)(i+1)*100)/config.requests;
+//            }
         }
-        printf("average latency is %lld nanosecond %d \n",meanlat/config.requests);
-//        printf("%.2f requests per second\n\n", reqpersec);
+        printf("average latency is %lld nanosecond\n", (long long)meanlat/config.requests_finished);
+        printf("%.2f requests per second\n\n", reqpersec);
     } else if (config.csv) {
         printf("\"%s\",\"%.2f\"\n", config.title, reqpersec);
     } else {
@@ -523,7 +518,6 @@ static void showThroughputReport()
     }
 
     printf("%ld requests per second\n\n", throughput);
-    config.totlatency = 0;
 
 
 }
@@ -543,8 +537,6 @@ static void benchmark(char *title, char *cmd, int len) {
     processEvents(c);
 //    config.totlatency = /*mstime()-config.start;*/
     showThroughputReport();
-
-//    showLatencyReport();
     freeAllClients();
 
 }
@@ -719,8 +711,6 @@ int test_is_selected(char *name) {
 void *processEventOnce(void *t_data)
 {
     int i = 0;
-    long long start = 0;
-    long long latency = -1;
     struct thread_data* t_data_;
     t_data_ = (struct thread_data*) t_data;
     client c = t_data_->c;
@@ -729,96 +719,50 @@ void *processEventOnce(void *t_data)
     int finished_requests = t_data_->finished_requests;
     int nn = finished_requests;
 
+
     struct ibv_wc wc;
     config.start[task_id] = mstime();
-
-    int getSetFlags, ycsb10Flags = 0, ycsb50Flags = 0;
-
-    if (test_is_selected("set")){
-
-        getSetFlags = 3;
-     }
-    else if(test_is_selected("get"))
-    {
-        getSetFlags = 2;
-    }
-    else if(test_is_selected("10"))
-    {
+    int getSetFlags = 0;
+    if (test_is_selected("set")) {
         getSetFlags = 1;
-    }
+     }
     else
     {
-        getSetFlags = 0;
+       getSetFlags = 0;
     }
-
     redisSetRequest set_req;
     redisGetRequest get_req;
     while(nn < requests)
     {
-        if(3 == getSetFlags)
+
+//         printf("thread starts here111\n");
+//        __sync_fetch_and_sub(&nn, 1);
+//        randomizeClientKey(c);
+        if(getSetFlags)
         {
             //set cmd
-            strcpy(set_req.cmd, "set");
+            strcpy(set_req.cmd, "SET");
             sprintf(set_req.key,"key");
 
-            memset(set_req.value,'x',MSG_SIZE - 30);
+            memset(set_req.value,'x',1);
             c->req = (void*) (&set_req);
-
         }
-        else if(2 == getSetFlags) //get cmd
+        else //get cmd
         {
-            strcpy(get_req.cmd, "get");
+            strcpy(get_req.cmd, "GET");
             sprintf(get_req.key,"key");
             c->req = (void*) (&get_req);
-
-//            printf("get_req.cmd %s", get_req.cmd);
+//            printf("obuf is  c->obuf");
         }
-        else if(1 == getSetFlags) /*5% get, 95% set*/
-        {
-            if(ycsb10Flags == 9)
-            {
-                strcpy(set_req.cmd, "set");
-                sprintf(set_req.key,"key");
-                memset(set_req.value,'x',MSG_SIZE - 30);
-                c->req = (void*) (&set_req);
-                ycsb10Flags = 0;
-            }
-            else
-            {
-                strcpy(get_req.cmd, "get");
-                sprintf(get_req.key,"key");
-                c->req = (void*) (&get_req);
-                ycsb10Flags++;
-            }
-        }
-        else /*50% get, 50% set*/
-        {
-            if(ycsb50Flags)
-            {
-               strcpy(set_req.cmd, "set");
-               sprintf(set_req.key,"key");
-               memset(set_req.value,'x',MSG_SIZE - 30);
-               c->req = (void*) (&set_req);
-
-            }
-            else
-            {
-                strcpy(get_req.cmd, "get");
-                sprintf(get_req.key,"key");
-                c->req = (void*) (&get_req);
-            }
-            ycsb50Flags = 1 - ycsb50Flags;
-        }
-//        getSetFlags = 1 - getSetFlags;
 
         memcpy((uintptr_t)res.buf + (task_id * 2 + 1) * MSG_SIZE,c->req, sizeof(c->req));
 //        IBV_WR_RDMA_WRITE_WITH_IMM
-//        start = ustime();
         if (post_send(&res, task_id * 2 + 1,  IBV_WR_RDMA_WRITE_WITH_IMM, true))
         {
 //            fprintf(stderr, "failed to post SR 3\n");
             return REDIS_ERR;
         }
+
         wc.qp_num = 1;
         // poll local write cq event
         while(find_local_qp_by_id(wc.qp_num) %2 != 0)
@@ -833,27 +777,28 @@ void *processEventOnce(void *t_data)
         {
             fprintf(stderr, "failed to post RR\n");
         }
-//        if (latency < 0)
-//        {
-//            latency = ustime()- start;
-////                printf("xxx %lld \n", c->latency);
-//        }
-//         config.latency[finished_requests] = latency;
-//            meanlat += c->latency;
-//            printf("latency is %ld \n", config.latency[finished_requests]);
-//                __sync_fetch_and_sub(&config.requests_finished, 1);
 
-         nn += 1;
-         finished_requests += 1;
+//        if (config.requests_finished < config.requests)
+//        {
+//            if (c->latency < 0)
+//            {
+////                c->latency = ustime()- c->start;
+//            }
+
+////            config.latency[finished_requests++] = c->latency;
+////                __sync_fetch_and_sub(&config.requests_finished, 1);
+//        }
+
+            nn += 1;
+            finished_requests += 1;
          }
         if (finished_requests == requests) {
 
 //            config.requests_finished = finished_requests;
 //            printf("config.requests_finished%d",config.requests_finished);
-            config.perlatency[task_id] = mstime()-config.start[task_id];
+//            config.perlatency[task_id] = mstime()-config.start[task_id];
 //            if(config.perlatency[task_id] > config.totlatency)config.totlatency = config.perlatency[task_id];
-//            config.perlatency[task_id] = mstime() - c->start;
-//            printf("xxx %lld \n", config.perlatency[task_id]);
+            config.perlatency[task_id] = mstime()-config.start[task_id];
 //            printf("xx %ld yy % ld \n", finished_requests, config.perlatency[task_id]);
             config.throughput[task_id] = (long long)config.requests/WORKER_NUM/config.perlatency[task_id]*1000;
             return;
@@ -869,6 +814,9 @@ void processEvents(client c)
     int rc, t;
     pthread_t threads[NUM_THREADS];
     for(t = 0; t < NUM_THREADS; t++){
+//        char *cmd;
+//        int len = redisFormatCommand(&cmd,"GET key:key%d",t/2);
+//        printf("xxxxxxxxxxxxxx%s", cmd);
         t_data[t].c = c;
         t_data[t].task_id = t;
         t_data[t].requests = config.requests / (WORKER_NUM)* (t+1);
@@ -881,6 +829,7 @@ void processEvents(client c)
         }
 
     }
+//     pthread_exit(0);
 
     void *status;
     for(t=0; t<NUM_THREADS; t++)
@@ -893,6 +842,80 @@ void processEvents(client c)
           }
           printf("Completed join with thread %d status= %ld\n",t, (long)status);
        }
+
+
+//        pthread_exit(NULL);
+    //    while(--n)
+    //    {
+    ////        printf("obuf is %s\n", c->obuf);
+    //        res.buf[0] = RDMA_REQUESTING;
+    //        memcpy(res.buf+1,c->obuf,strlen(c->obuf));
+
+    //        //send requests
+    //        if (post_send(&res, 0, IBV_WR_RDMA_WRITE_WITH_IMM))
+    //        {
+    //          fprintf(stderr, "failed to post SR 3\n");
+    //          return REDIS_ERR;
+    //        }
+
+    //        struct ibv_wc wc;
+    //        if (poll_completion(&res, &wc))
+    //        {
+    //         fprintf(stderr, "poll completion failed 3\n");
+    ////         return REDIS_ERR;
+    //        }
+
+    //        if (poll_completion(&res, &wc))
+    //        {
+    //         fprintf(stderr, "poll completion failed 3\n");
+    ////         return REDIS_ERR;
+    //        }
+    //        else if(RDMA_REPLYING == res.buf[0])
+    //        {
+    //            if (config.requests_finished < config.requests)
+    //                {
+    //                 if (c->latency < 0) c->latency = ustime()-(c->start);
+    //                    config.latency[config.requests_finished++] = c->latency;
+    //                }
+
+    //            res.buf[0] = RDMA_REPLYED;
+    //            if (post_receive(&res))
+    //            {
+    //                fprintf(stderr, "failed to post RR\n");
+    //                int rc = 1;
+    //            }
+    ////            printf("config.requests_finished%d",config.requests_finished);
+    ////            break;
+    //        }
+    //        if (config.requests_finished == config.requests) {
+    ////            printf("config.requests_finished%d",config.requests_finished);
+    ////            break;
+    //        }
+    //    }
+
+
+    ////        //receive responses
+    ////        while(1)
+    ////        {
+    ////            if(RDMA_REPLYING != res.buf[0])
+    ////            {
+    //////             printf("time %ld\n",ustime()-(c->start));
+    ////             continue;
+    ////            }
+    ////            if (config.requests_finished < config.requests)
+    ////                {
+    ////                 if (c->latency < 0) c->latency = ustime()-(c->start);
+    ////                    config.latency[config.requests_finished++] = c->latency;
+    ////                }
+
+    ////            res.buf[0] = RDMA_REPLYED;
+    //////            printf("config.requests_finished%d",config.requests_finished);
+    ////            break;
+    ////        }
+    ////        if (config.requests_finished == config.requests) {
+    //////            printf("config.requests_finished%d",config.requests_finished);
+    ////            break;
+    ////        }
 
 }
 
@@ -912,7 +935,7 @@ int main(int argc, const char **argv) {
     config_rdma.tcp_port = 10086;
     config_rdma.ib_port = 1;
     config_rdma.gid_idx = -1;
-    config_rdma.server_name = "10.11.6.114";
+    config_rdma.server_name = "10.11.6.113";
 
     srandom(time(NULL));
     signal(SIGHUP, SIG_IGN);
@@ -1015,16 +1038,6 @@ int main(int argc, const char **argv) {
         if (test_is_selected("get")) {
             len = redisFormatCommand(&cmd,"GET key:key");
             benchmark("GET",cmd,len);
-            free(cmd);
-        }
-        if (test_is_selected("10")) {
-            len = redisFormatCommand(&cmd,"GET key:key");
-            benchmark("10",cmd,len);
-            free(cmd);
-        }
-        if (test_is_selected("50")) {
-            len = redisFormatCommand(&cmd,"GET key:key");
-            benchmark("50",cmd,len);
             free(cmd);
         }
 

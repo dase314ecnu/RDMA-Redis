@@ -86,21 +86,88 @@ redisClient *createClient(int fd) {
      * This is useful since all the Redis commands needs to be executed
      * in the context of a client. When commands are executed in other
      * contexts (for instance a Lua script) we need a non connected client. */
-    if (fd != -1) {
-        anetNonBlock(NULL,fd);
-        anetEnableTcpNoDelay(NULL,fd);
-        if (server.tcpkeepalive)
-            anetKeepAlive(NULL,fd,server.tcpkeepalive);
-        if (aeCreateFileEvent(server.el,fd,AE_READABLE,
-            readQueryFromClient, c) == AE_ERR)
-        {
-            close(fd);
-            zfree(c);
-            return NULL;
-        }
-    }
+//    if (fd != -1) {
+//        anetNonBlock(NULL,fd);
+//        anetEnableTcpNoDelay(NULL,fd);
+//        if (server.tcpkeepalive)
+//            anetKeepAlive(NULL,fd,server.tcpkeepalive);
+//        if (aeCreateFileEvent(server.el,fd,AE_READABLE,
+//            readQueryFromClient, c) == AE_ERR)
+//        {
+//            close(fd);
+//            zfree(c);
+//            return NULL;
+//        }
+//    }
 
     selectDb(c,0);
+    c->id = server.next_client_id++;
+    c->fd = fd;
+    c->name = NULL;
+    c->bufpos = 0;
+    c->querybuf = sdsempty();
+    c->querybuf_peak = 0;
+    c->reqtype = 0;
+    c->argc = 0;
+    c->argv = NULL;
+    c->cmd = c->lastcmd = NULL;
+    c->multibulklen = 0;
+    c->bulklen = -1;
+    c->sentlen = 0;
+    c->flags = 0;
+    c->ctime = c->lastinteraction = server.unixtime;
+    c->authenticated = 0;
+    c->replstate = REDIS_REPL_NONE;
+    c->repl_put_online_on_ack = 0;
+    c->reploff = 0;
+    c->repl_ack_off = 0;
+    c->repl_ack_time = 0;
+    c->slave_listening_port = 0;
+    c->reply = listCreate();
+    c->reply_bytes = 0;
+    c->obuf_soft_limit_reached_time = 0;
+    listSetFreeMethod(c->reply,decrRefCountVoid);
+    listSetDupMethod(c->reply,dupClientReplyValue);
+    c->btype = REDIS_BLOCKED_NONE;
+    c->bpop.timeout = 0;
+    c->bpop.keys = dictCreate(&setDictType,NULL);
+    c->bpop.target = NULL;
+    c->bpop.numreplicas = 0;
+    c->bpop.reploffset = 0;
+    c->woff = 0;
+    c->watched_keys = listCreate();
+    c->pubsub_channels = dictCreate(&setDictType,NULL);
+    c->pubsub_patterns = listCreate();
+    c->peerid = NULL;
+    listSetFreeMethod(c->pubsub_patterns,decrRefCountVoid);
+    listSetMatchMethod(c->pubsub_patterns,listMatchObjects);
+    if (fd != -1) listAddNodeTail(server.clients,c);
+    initClientMultiState(c);
+    return c;
+}
+
+redisClient *createClient_(int fd,int db_id) {
+    redisClient *c = zmalloc(sizeof(redisClient));
+
+    /* passing -1 as fd it is possible to create a non connected client.
+     * This is useful since all the Redis commands needs to be executed
+     * in the context of a client. When commands are executed in other
+     * contexts (for instance a Lua script) we need a non connected client. */
+//    if (fd != -1) {
+//        anetNonBlock(NULL,fd);
+//        anetEnableTcpNoDelay(NULL,fd);
+//        if (server.tcpkeepalive)
+//            anetKeepAlive(NULL,fd,server.tcpkeepalive);
+//        if (aeCreateFileEvent(server.el,fd,AE_READABLE,
+//            readQueryFromClient, c) == AE_ERR)
+//        {
+//            close(fd);
+//            zfree(c);
+//            return NULL;
+//        }
+//    }
+
+    selectDb(c,db_id);
     c->id = server.next_client_id++;
     c->fd = fd;
     c->name = NULL;
@@ -226,7 +293,7 @@ int _addReplyToBuffer(redisClient *c, char *s, size_t len) {
 
     /* If there already are entries in the reply list, we cannot
      * add anything more to the static buffer. */
-    if (listLength(c->reply) > 0) return REDIS_ERR;
+//    if (listLength(c->reply) > 0) return REDIS_ERR;
 
     /* Check that the buffer has enough space available for this string. */
     if (len > available) return REDIS_ERR;
@@ -240,7 +307,7 @@ int _addReplyToBuffer(redisClient *c, char *s, size_t len) {
 }
 
 void _addReplyObjectToList(redisClient *c, robj *o) {
-    printf("_addReplyObjectToList");
+//    printf("_addReplyObjectToList");
     robj *tail;
 
     if (c->flags & REDIS_CLOSE_AFTER_REPLY) return;
@@ -349,50 +416,125 @@ void addReply(redisClient *c, robj *obj) {
      * If the encoding is RAW and there is room in the static buffer
      * we'll be able to send the object to the client without
      * messing with its page. */
-    if (sdsEncodedObject(obj)) {
-        if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != REDIS_OK)
-            _addReplyObjectToList(c,obj);
-    } else if (obj->encoding == REDIS_ENCODING_INT) {
-        /* Optimization: if there is room in the static buffer for 32 bytes
-         * (more than the max chars a 64 bit integer can take as string) we
-         * avoid decoding the object and go for the lower level approach. */
-        if (listLength(c->reply) == 0 && (sizeof(c->buf) - c->bufpos) >= 32) {
-            char buf[32];
-            int len;
+//    if (sdsEncodedObject(obj)) {
+//        if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != REDIS_OK)
+//            _addReplyObjectToList(c,obj);
+//    } else if (obj->encoding == REDIS_ENCODING_INT) {
+//        /* Optimization: if there is room in the static buffer for 32 bytes
+//         * (more than the max chars a 64 bit integer can take as string) we
+//         * avoid decoding the object and go for the lower level approach. */
+//        if (listLength(c->reply) == 0 && (sizeof(c->buf) - c->bufpos) >= 32) {
+//            char buf[32];
+//            int len;
 
-            len = ll2string(buf,sizeof(buf),(long)obj->ptr);
-            if (_addReplyToBuffer(c,buf,len) == REDIS_OK)
-                return;
-            /* else... continue with the normal code path, but should never
-             * happen actually since we verified there is room. */
-        }
-        obj = getDecodedObject(obj);
-        if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != REDIS_OK)
-            _addReplyObjectToList(c,obj);
-        decrRefCount(obj);
-    } else {
-        redisPanic("Wrong obj->encoding in addReply()");
-    }
+//            len = ll2string(buf,sizeof(buf),(long)obj->ptr);
+//            if (_addReplyToBuffer(c,buf,len) == REDIS_OK)
+//                return;
+//            /* else... continue with the normal code path, but should never
+//             * happen actually since we verified there is room. */
+//        }
+//        obj = getDecodedObject(obj);
+//        if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != REDIS_OK)
+//            _addReplyObjectToList(c,obj);
+//        decrRefCount(obj);
+//    } else {
+//        redisPanic("Wrong obj->encoding in addReply()");
+//    }
 
 
 //    printf("The server-end reply1 is%s", c->buf);
 
-
-    memset(server.res.buf,0,strlen(c->buf));
-
+//    memset(server.res.buf,0,strlen(c->buf));
     server.res.buf[0] = RDMA_REPLYING;
+    memcpy(server.res.buf+1,(char*)obj->ptr,strlen(obj->ptr));
 
-    memcpy(server.res.buf+1,c->buf,strlen(c->buf));
-
-    if (post_send(&server.res, IBV_WR_RDMA_WRITE))
+//    IBV_WR_RDMA_WRITE_WITH_IMM
+    if (post_send(&server.res, 0,  IBV_WR_RDMA_WRITE_WITH_IMM, false))
     {
-       fprintf(stderr, "failed to post SR 3\n");
+//       fprintf(stderr, "failed to post SR 3\n");
        return REDIS_ERR;
     }
-    if (poll_completion(&server.res))
+
+//    if (post_receive(&server.res))
+//    {
+//        fprintf(stderr, "failed to post RR\n");
+//        int rc = 1;
+//    }
+//    struct ibv_wc wc;
+//    if (poll_completion_(&server.res, 0, &wc))
+//    {
+//       fprintf(stderr, "poll completion failed 3\n");
+////       return REDIS_ERR;
+//    }
+}
+void addReply_(redisClient *c, robj *obj, bool is_last) {
+//    if (prepareClientToWrite(c) != REDIS_OK) return;
+
+//    /* This is an important place where we can avoid copy-on-write
+//     * when there is a saving child running, avoiding touching the
+//     * refcount field of the object if it's not needed.
+//     *
+//     * If the encoding is RAW and there is room in the static buffer
+//     * we'll be able to send the object to the client without
+//     * messing with its page. */
+//    if (sdsEncodedObject(obj)) {
+//        if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != REDIS_OK)
+//            _addReplyObjectToList(c,obj);
+//    } else if (obj->encoding == REDIS_ENCODING_INT) {
+//        /* Optimization: if there is room in the static buffer for 32 bytes
+//         * (more than the max chars a 64 bit integer can take as string) we
+//         * avoid decoding the object and go for the lower level approach. */
+//        if (listLength(c->reply) == 0 && (sizeof(c->buf) - c->bufpos) >= 32) {
+//            char buf[32];
+//            int len;
+
+//            len = ll2string(buf,sizeof(buf),(long)obj->ptr);
+//            if (_addReplyToBuffer(c,buf,len) == REDIS_OK)
+//                return;
+//            /* else... continue with the normal code path, but should never
+//             * happen actually since we verified there is room. */
+//        }
+//        obj = getDecodedObject(obj);
+//        if (_addReplyToBuffer(c,obj->ptr,sdslen(obj->ptr)) != REDIS_OK)
+//            _addReplyObjectToList(c,obj);
+//        decrRefCount(obj);
+//    } else {
+//        redisPanic("Wrong obj->encoding in addReply()");
+//    }
+
+
+    if(is_last)
     {
-       fprintf(stderr, "poll completion failed 3\n");
-       return REDIS_ERR;
+        /////////gdg dfdf d
+        ///
+//        int i = 1;
+//        fprintf(stderr, "server post send %d \n",c->qp_id);
+//        printf("The server-end reply1 is%s", c->buf);
+
+//        memset(server.res.buf + (c->qp_id - 1)*MSG_SIZE,0,strlen(c->buf));
+//        server.res.buf[0] = RDMA_REPLYING;
+        int qp_id = c->qp_id;
+        memcpy((uintptr_t)(server.res.buf + (qp_id - 1)*MSG_SIZE),(char*)obj->ptr,strlen(obj->ptr));
+
+//        IBV_WR_RDMA_WRITE_WITH_IMM
+        if (post_send(&server.res, qp_id - 1, IBV_WR_RDMA_WRITE_WITH_IMM, true))
+        {
+           fprintf(stderr, "failed to post SR 3\n");
+           return REDIS_ERR;
+        }
+//        struct ibv_wc wc;
+//        if (poll_completion_(&server.res, qp_id/2, &wc))
+//        {
+//           fprintf(stderr, "poll completion failed 3\n");
+//    //       return REDIS_ERR;
+//        }
+
+//        struct ibv_wc wc;
+//        if (poll_completion_(&server.res, 0, &wc))
+//        {
+//           fprintf(stderr, "poll completion failed 3\n");
+//    //       return REDIS_ERR;
+//        }
     }
 }
 
@@ -575,16 +717,17 @@ void addReplyBulkLen(redisClient *c, robj *obj) {
     }
 
     if (len < REDIS_SHARED_BULKHDR_LEN)
-        addReply(c,shared.bulkhdr[len]);
+        addReply_(c,shared.bulkhdr[len],false);
     else
         addReplyLongLongWithPrefix(c,len,'$');
 }
 
 /* Add a Redis Object as a bulk reply */
 void addReplyBulk(redisClient *c, robj *obj) {
+//    printf("addReplyBulk\n");
     addReplyBulkLen(c,obj);
-    addReply(c,obj);
-    addReply(c,shared.crlf);
+    addReply_(c,obj,false);
+    addReply_(c,shared.crlf,true);
 }
 
 /* Add a C buffer as bulk reply */
@@ -724,47 +867,49 @@ void replicationHandleMasterDisconnection(void) {
 }
 
 void freeClient(redisClient *c) {
-    listNode *ln;
+//    listNode *ln;
 
-    /* If this is marked as current client unset it */
+//    /* If this is marked as current client unset it */
     if (server.current_client == c) server.current_client = NULL;
 
-    /* If it is our master that's beging disconnected we should make sure
-     * to cache the state to try a partial resynchronization later.
-     *
-     * Note that before doing this we make sure that the client is not in
-     * some unexpected state, by checking its flags. */
-    if (server.master && c->flags & REDIS_MASTER) {
-        redisLog(REDIS_WARNING,"Connection with master lost.");
-        if (!(c->flags & (REDIS_CLOSE_AFTER_REPLY|
-                          REDIS_CLOSE_ASAP|
-                          REDIS_BLOCKED|
-                          REDIS_UNBLOCKED)))
-        {
-            replicationCacheMaster(c);
-            return;
-        }
-    }
+//    /* If it is our master that's beging disconnected we should make sure
+//     * to cache the state to try a partial resynchronization later.
+//     *
+//     * Note that before doing this we make sure that the client is not in
+//     * some unexpected state, by checking its flags. */
+//    if (server.master && c->flags & REDIS_MASTER) {
+//        redisLog(REDIS_WARNING,"Connection with master lost.");
+//        if (!(c->flags & (REDIS_CLOSE_AFTER_REPLY|
+//                          REDIS_CLOSE_ASAP|
+//                          REDIS_BLOCKED|
+//                          REDIS_UNBLOCKED)))
+//        {
+//            replicationCacheMaster(c);
+//            return;
+//        }
+//    }
 
-    /* Log link disconnection with slave */
-    if ((c->flags & REDIS_SLAVE) && !(c->flags & REDIS_MONITOR)) {
-        redisLog(REDIS_WARNING,"Connection with slave %s lost.",
-            replicationGetSlaveName(c));
-    }
+//    /* Log link disconnection with slave */
+//    if ((c->flags & REDIS_SLAVE) && !(c->flags & REDIS_MONITOR)) {
+//        redisLog(REDIS_WARNING,"Connection with slave %s lost.",
+//            replicationGetSlaveName(c));
+//    }
+//    printf("xxxxx %d",c->flags);
+
 
     /* Free the query buffer */
-    sdsfree(c->querybuf);
-    c->querybuf = NULL;
+
 
     /* Deallocate structures used to block on blocking ops. */
-    if (c->flags & REDIS_BLOCKED) unblockClient(c);
-    dictRelease(c->bpop.keys);
+//    if (c->flags & REDIS_BLOCKED) unblockClient(c);
+//    dictRelease(c->bpop.keys);
 
     /* UNWATCH all the keys */
-    unwatchAllKeys(c);
-    listRelease(c->watched_keys);
 
     /* Unsubscribe from all the pubsub channels */
+
+    sdsfree(c->querybuf);
+    dictRelease(c->bpop.keys);
     pubsubUnsubscribeAllChannels(c,0);
     pubsubUnsubscribeAllPatterns(c,0);
     dictRelease(c->pubsub_channels);
@@ -772,66 +917,74 @@ void freeClient(redisClient *c) {
 
     /* Close socket, unregister events, and remove list of replies and
      * accumulated arguments. */
-    if (c->fd != -1) {
-        aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
-        aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
-        close(c->fd);
-    }
-    listRelease(c->reply);
-    freeClientArgv(c);
+//    if (c->fd != -1) {
+//        aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
+//        aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
+//        close(c->fd);
+//    }
 
-    /* Remove from the list of clients */
-    if (c->fd != -1) {
-        ln = listSearchKey(server.clients,c);
-        redisAssert(ln != NULL);
-        listDelNode(server.clients,ln);
-    }
 
-    /* When client was just unblocked because of a blocking operation,
-     * remove it from the list of unblocked clients. */
-    if (c->flags & REDIS_UNBLOCKED) {
-        ln = listSearchKey(server.unblocked_clients,c);
-        redisAssert(ln != NULL);
-        listDelNode(server.unblocked_clients,ln);
-    }
 
-    /* Master/slave cleanup Case 1:
-     * we lost the connection with a slave. */
-    if (c->flags & REDIS_SLAVE) {
-        if (c->replstate == REDIS_REPL_SEND_BULK) {
-            if (c->repldbfd != -1) close(c->repldbfd);
-            if (c->replpreamble) sdsfree(c->replpreamble);
-        }
-        list *l = (c->flags & REDIS_MONITOR) ? server.monitors : server.slaves;
-        ln = listSearchKey(l,c);
-        redisAssert(ln != NULL);
-        listDelNode(l,ln);
-        /* We need to remember the time when we started to have zero
-         * attached slaves, as after some time we'll free the replication
-         * backlog. */
-        if (c->flags & REDIS_SLAVE && listLength(server.slaves) == 0)
-            server.repl_no_slaves_since = server.unixtime;
-        refreshGoodSlavesCount();
-    }
+//    /* Remove from the list of clients */
+//    if (c->fd != -1) {
+//        ln = listSearchKey(server.clients,c);
+//        redisAssert(ln != NULL);
+//        listDelNode(server.clients,ln);
+//    }
 
-    /* Master/slave cleanup Case 2:
-     * we lost the connection with the master. */
-    if (c->flags & REDIS_MASTER) replicationHandleMasterDisconnection();
+//    /* When client was just unblocked because of a blocking operation,
+//     * remove it from the list of unblocked clients. */
+//    if (c->flags & REDIS_UNBLOCKED) {
+//        ln = listSearchKey(server.unblocked_clients,c);
+//        redisAssert(ln != NULL);
+//        listDelNode(server.unblocked_clients,ln);
+//    }
 
-    /* If this client was scheduled for async freeing we need to remove it
-     * from the queue. */
-    if (c->flags & REDIS_CLOSE_ASAP) {
-        ln = listSearchKey(server.clients_to_close,c);
-        redisAssert(ln != NULL);
-        listDelNode(server.clients_to_close,ln);
-    }
+//    /* Master/slave cleanup Case 1:
+//     * we lost the connection with a slave. */
+//    if (c->flags & REDIS_SLAVE) {
+//        if (c->replstate == REDIS_REPL_SEND_BULK) {
+//            if (c->repldbfd != -1) close(c->repldbfd);
+//            if (c->replpreamble) sdsfree(c->replpreamble);
+//        }
+//        list *l = (c->flags & REDIS_MONITOR) ? server.monitors : server.slaves;
+//        ln = listSearchKey(l,c);
+//        redisAssert(ln != NULL);
+//        listDelNode(l,ln);
+//        /* We need to remember the time when we started to have zero
+//         * attached slaves, as after some time we'll free the replication
+//         * backlog. */
+//        if (c->flags & REDIS_SLAVE && listLength(server.slaves) == 0)
+//            server.repl_no_slaves_since = server.unixtime;
+//        refreshGoodSlavesCount();
+//    }
+
+//    /* Master/slave cleanup Case 2:
+//     * we lost the connection with the master. */
+//    if (c->flags & REDIS_MASTER) replicationHandleMasterDisconnection();
+
+//    /* If this client was scheduled for async freeing we need to remove it
+//     * from the queue. */
+//    if (c->flags & REDIS_CLOSE_ASAP) {
+//        ln = listSearchKey(server.clients_to_close,c);
+//        redisAssert(ln != NULL);
+//        listDelNode(server.clients_to_close,ln);
+//    }
 
     /* Release other dynamically allocated client structure fields,
      * and finally release the client structure itself. */
+    listRelease(c->reply);
+    freeClientArgv(c);
     if (c->name) decrRefCount(c->name);
+
+    unwatchAllKeys(c);
+    listRelease(c->watched_keys);
+
+//    c->querybuf = NULL;
     zfree(c->argv);
     freeClientMultiState(c);
     sdsfree(c->peerid);
+//    free(c->init);
     zfree(c);
 }
 
@@ -947,6 +1100,7 @@ void resetClient(redisClient *c) {
     c->reqtype = 0;
     c->multibulklen = 0;
     c->bulklen = -1;
+    c->bufpos = 0;
     /* We clear the ASKING flag as well if we are not inside a MULTI, and
      * if what we just executed is not the ASKING command itself. */
     if (!(c->flags & REDIS_MULTI) && prevcmd != askingCommand)
@@ -1811,15 +1965,13 @@ int processEventsWhileBlocked(void) {
  */
 void processEvents(redisClient *c)
 {
-
-    server.res.buf[0] == RDMA_REQUESTED;
     processInputBuffer_(c);
 
 }
 
 void processInputBuffer_(redisClient *req) {
     /* Keep processing while there is something in the input buffer */
-    while(sdslen(req->querybuf)) {
+//    while(sdslen(req->querybuf)) {
         /* Return if clients are paused. */
 
         /* Immediately abort if the client is in the middle of something. */
@@ -1829,18 +1981,43 @@ void processInputBuffer_(redisClient *req) {
          * written to the client. Make sure to not let the reply grow after
          * this flag has been set (i.e. don't process more commands). */
 
-        if (processMultibulkBuffer_(req) != REDIS_OK) break;
+//        if (processMultibulkBuffer_(req) != REDIS_OK) break;
 
         /* Multibulk processing could see a <= 0 length. */
 //        if (c->argc == 0) {
 //            resetClient(c);
 //        } else {
 //            /* Only reset the client when the command was executed. */
-            if (processCommand_(req) == REDIS_OK)
+
+
+//        if (req->argv) zfree(req->argv);
+//        req->argv = zmalloc(sizeof(robj*)*3);
+//        char *token[3];
+//        /* 获取第一个子字符串 */
+//        const char s[2] = "|";
+//        token[0] = strtok(req->querybuf, s);
+
+//        printf( "%s\n", token);
+
+//        token[1] = strtok(req->querybuf+strlen(token[0]), s);
+//        printf( "%s\n", token);
+
+//        for(int i =0;i<req->argc;i++)
+//        {
+////            printf( "%s\n", req->argv[req->argc]);
+
+//        }
+//        req->argv[req->argc++] =
+//            createStringObject(req->querybuf, newline - req->querybuf);
+//        req->argv[req->argc++] =
+//            createStringObject(req->querybuf, newline - req->querybuf);
+
+        if (processCommand_(req) == REDIS_OK)
             {
-                resetClient(req);
+//                resetClient(req);
+//                freeClient(req);
         }
-    }
+//    }
 }
 
 int processMultibulkBuffer_(redisClient *req) {

@@ -454,7 +454,7 @@ void dictRedisObjectDestructor(void *privdata, void *val)
     DICT_NOTUSED(privdata);
 
     if (val == NULL) return; /* Values of swapped out keys as set to NULL */
-    decrRefCount(val);
+//    decrRefCount(val);
 }
 
 void dictSdsDestructor(void *privdata, void *val)
@@ -1406,7 +1406,7 @@ void initServerConfig(void) {
     server.hz = REDIS_DEFAULT_HZ;
     server.runid[REDIS_RUN_ID_SIZE] = '\0';
     server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
-    server.port = REDIS_SERVERPORT;
+    server.port = 7001;
     server.tcp_backlog = REDIS_TCP_BACKLOG;
     server.bindaddr_count = 0;
     server.unixsocket = NULL;
@@ -1552,6 +1552,7 @@ void initServerConfig(void) {
     server.assert_line = 0;
     server.bug_report_start = 0;
     server.watchdog_period = 0;
+
 }
 
 /* This function will try to raise the max number of open files accordingly to
@@ -1775,7 +1776,10 @@ void initServer(void) {
     adjustOpenFilesLimit();
     server.el = aeCreateEventLoop(server.maxclients+REDIS_EVENTLOOP_FDSET_INCR);
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
-
+    server.tbl = cuckoo_table_init(100000);
+    char * key = "key";
+    char * value = "value";
+    cuckoo_table_insert(server.tbl,(void*)key,(void*)value);
 //    /* Open the TCP listening socket for the user commands. */
 //    if (server.port != 0 &&
 //        listenToPort(server.port,server.ipfd,&server.ipfd_count) == REDIS_ERR)
@@ -3690,47 +3694,129 @@ int main(int argc, char **argv) {
     aeSetBeforeSleepProc(server.el,beforeSleep);
 //    aeMain(server.el);
 
-
     int rc = 1;
     /* init all of the resources, so cleanup will be easy */
     resources_init(&server.res);
     /* create resources before using them */
+    fprintf(stderr, " to create resources  0\n");
     if (resources_create(&server.res))
     {
         fprintf(stderr, "failed to create resources\n");
         return;
     }
     /* connect the QPs */
+    fprintf(stderr, " to create resources  1\n");
     if (connect_qp(&server.res))
     {
         fprintf(stderr, "failed to connect QPs\n");
         return REDIS_ERR;
     }
+    fprintf(stderr, " to create resources  2\n");
+    /* let the client post RR to be prepared for incoming messages */
 
-    char *temp;
-    while(1)
-    {
-//        printf("the size is %d, the text is %s\n",strlen(res.buf), res.buf);
+    long long fxxk = 0;
+    long long start = mstime();
+//    while(1)
+//    {
+//        fxxk +=1;
+//        if(fxxk >= 100000)
+//        {
+////            printf("the time is %0.2f \n",(float)(mstime() - start)/1000);
+////            start = mstime();
+//            fxxk = 0;
+//        }
+    int NUM_THREADS = SERVER_WORKER_MUM;
+    int t;
+    pthread_t threads[NUM_THREADS];
+    for(t = 0; t < NUM_THREADS; t++){
+        t_data[t] = t;
+        printf("In main: creating thread %d\n", t);
+        rc = pthread_create(&threads[t], NULL, processEventOnce, (void *)&t_data[t]);
+        if (rc){
+            printf("ERROR; return code from pthread_create() is %d\n", rc);
+            exit(-1);
+        }
+     }
 
-     if(server.res.buf[0] == RDMA_REQUESTING)
-     {
-        redisClient *c;
-        if((c = createClient(-1)) == NULL)
-            return REDIS_ERR;
-
-//        const char* req_buf = server.res.buf + 1;
-        c->querybuf = sdsnew(server.res.buf + 1);
-//        memcpy(c->querybuf, server.res.buf, strlen(server.res.buf));
-//        printf("fxxk000%d\n",server.res.buf[0]);
-//        printf("fxxk%s\n",c->querybuf);
-         //aeDeleteEventLoop(server.el);
-        processEvents(c);
-
-      }
-//        usleep(1);
-    }
+    void *status;
+    for(t=0; t<NUM_THREADS; t++)
+       {
+          rc = pthread_join(threads[t], &status);
+          if (rc)
+          {
+             printf("ERROR; return code from pthread_join()is %d\n", rc);
+             exit(-1);
+          }
+          printf("Completed join with thread %d status= %ld\n",t, (long)status);
+       }
 
     return 0;
+}
+
+int processEventOnce(void *task_id_)
+{
+//    printf("task_id %d",123);
+
+    int *task_id = (int *)task_id_;
+    struct ibv_wc wc;
+
+    // poll local write cq event
+    redisClient *c;
+    if((c = createClient_(-1,*task_id )) == NULL)
+        return REDIS_ERR;
+
+    while(1)
+    {
+//        resetClient(c);
+        int qp_id = 0;
+        wc.qp_num = 1;
+        while(qp_id %2 != 1)
+        {
+            if (poll_completion_(&server.res, *task_id, &wc))
+            {
+               fprintf(stderr, "poll completion failed 3\n");
+               return REDIS_ERR;
+            }
+            qp_id = find_local_qp_by_id(wc.qp_num);
+        }
+
+        if (post_receive(&server.res, qp_id))
+        {
+            fprintf(stderr, "failed to post RR\n");
+        }
+        c->qp_id = qp_id;
+        char cmd[4];
+        memcpy(cmd, server.res.buf + c->qp_id * MSG_SIZE, 4);
+        if(strcmp(cmd,"get") == 0)
+        {   
+             redisGetRequest *req = (redisGetRequest *)(server.res.buf + qp_id * MSG_SIZE);
+
+            //get cmd
+            c->argv = zmalloc(sizeof(robj*)*2);
+            c->argv[c->argc++] =
+                        createStringObject(req->cmd, strlen(req->cmd));
+            c->argv[c->argc++] =
+                        createStringObject(req->key, strlen(req->key));
+        }
+        else {
+        // set cmd
+        redisSetRequest *init = (redisSetRequest *)(server.res.buf + qp_id * MSG_SIZE);
+
+        c->argv = zmalloc(sizeof(robj*)*3);
+        c->argv[c->argc++] =
+                    createStringObject(init->cmd, strlen(init->cmd));
+        c->argv[c->argc++] =
+                    createStringObject(init->key, strlen(init->key));
+        c->argv[c->argc++] =
+                    createStringObject(init->value, strlen(init->value));
+        }
+
+        processEvents(c);
+//        memset(server.res.buf + qp_id * MSG_SIZE, 0, MSG_SIZE);
+        resetClient(c);
+        qp_id = 0;
+    }
+
 }
 int processCommand_(redisClient *req) {
     /* The QUIT command is handled separately. Normal command procs will
@@ -3750,6 +3836,7 @@ int processCommand_(redisClient *req) {
 //        flagTransaction(c);
 //        addReplyErrorFormat(c,"unknown command '%s'",
 //            (char*)c->argv[0]->ptr);
+        printf("fcxx");
         return REDIS_OK;
     } else if ((req->cmd->arity > 0 && req->cmd->arity != req->argc) ||
                (req->argc < -req->cmd->arity)) {
@@ -3768,38 +3855,6 @@ int processCommand_(redisClient *req) {
         return REDIS_OK;
     }
 
-    /* If cluster is enabled perform the cluster redirection here.
-     * However we don't perform the redirection if:
-     * 1) The sender of this command is our master.
-     * 2) The command has no key arguments. */
-//    if (server.cluster_enabled &&
-//        !(c->flags & REDIS_MASTER) &&
-//        !(c->flags & REDIS_LUA_CLIENT &&
-//          server.lua_caller->flags & REDIS_MASTER) &&
-//        !(c->cmd->getkeys_proc == NULL && c->cmd->firstkey == 0))
-//    {
-//        int hashslot;
-
-//        if (server.cluster->state != REDIS_CLUSTER_OK) {
-//            flagTransaction(c);
-//            clusterRedirectClient(c,NULL,0,REDIS_CLUSTER_REDIR_DOWN_STATE);
-//            return REDIS_OK;
-//        } else {
-//            int error_code;
-//            clusterNode *n = getNodeByQuery(c,c->cmd,c->argv,c->argc,&hashslot,&error_code);
-//            if (n == NULL || n != server.cluster->myself) {
-//                flagTransaction(c);
-//                clusterRedirectClient(c,n,hashslot,error_code);
-//                return REDIS_OK;
-//            }
-//        }
-//    }
-
-    /* Handle the maxmemory directive.
-     *
-     * First we try to free some memory if possible (if there are volatile
-     * keys in the dataset). If there are not the only thing we can do
-     * is returning an error. */
     if (server.maxmemory) {
         int retval = freeMemoryIfNeeded();
         if ((req->cmd->flags & REDIS_CMD_DENYOOM) && retval == REDIS_ERR) {
@@ -3809,99 +3864,6 @@ int processCommand_(redisClient *req) {
         }
     }
 
-    /* Don't accept write commands if there are problems persisting on disk
-     * and if this is a master instance. */
-//    if (((server.stop_writes_on_bgsave_err &&
-//          server.saveparamslen > 0 &&
-//          server.lastbgsave_status == REDIS_ERR) ||
-//          server.aof_last_write_status == REDIS_ERR) &&
-//        server.masterhost == NULL &&
-//        (c->cmd->flags & REDIS_CMD_WRITE ||
-//         c->cmd->proc == pingCommand))
-//    {
-//        flagTransaction(c);
-//        if (server.aof_last_write_status == REDIS_OK)
-//            addReply(c, shared.bgsaveerr);
-//        else
-//            addReplySds(c,
-//                sdscatprintf(sdsempty(),
-//                "-MISCONF Errors writing to the AOF file: %s\r\n",
-//                strerror(server.aof_last_write_errno)));
-//        return REDIS_OK;
-//    }
-
-    /* Don't accept write commands if there are not enough good slaves and
-     * user configured the min-slaves-to-write option. */
-//    if (server.masterhost == NULL &&
-//        server.repl_min_slaves_to_write &&
-//        server.repl_min_slaves_max_lag &&
-//        c->cmd->flags & REDIS_CMD_WRITE &&
-//        server.repl_good_slaves_count < server.repl_min_slaves_to_write)
-//    {
-//        flagTransaction(c);
-//        addReply(c, shared.noreplicaserr);
-//        return REDIS_OK;
-//    }
-
-//    /* Don't accept write commands if this is a read only slave. But
-//     * accept write commands if this is our master. */
-//    if (server.masterhost && server.repl_slave_ro &&
-//        !(c->flags & REDIS_MASTER) &&
-//        c->cmd->flags & REDIS_CMD_WRITE)
-//    {
-//        addReply(c, shared.roslaveerr);
-//        return REDIS_OK;
-//    }
-
-//    /* Only allow SUBSCRIBE and UNSUBSCRIBE in the context of Pub/Sub */
-//    if (c->flags & REDIS_PUBSUB &&
-//        c->cmd->proc != pingCommand &&
-//        c->cmd->proc != subscribeCommand &&
-//        c->cmd->proc != unsubscribeCommand &&
-//        c->cmd->proc != psubscribeCommand &&
-//        c->cmd->proc != punsubscribeCommand) {
-//        addReplyError(c,"only (P)SUBSCRIBE / (P)UNSUBSCRIBE / QUIT allowed in this context");
-//        return REDIS_OK;
-//    }
-
-    /* Only allow INFO and SLAVEOF when slave-serve-stale-data is no and
-     * we are a slave with a broken link with master. */
-//    if (server.masterhost && server.repl_state != REDIS_REPL_CONNECTED &&
-//        server.repl_serve_stale_data == 0 &&
-//        !(c->cmd->flags & REDIS_CMD_STALE))
-//    {
-//        flagTransaction(c);
-//        addReply(c, shared.masterdownerr);
-//        return REDIS_OK;
-//    }
-
-    /* Loading DB? Return an error if the command has not the
-     * REDIS_CMD_LOADING flag. */
-//    if (server.loading && !(req->cmd->flags & REDIS_CMD_LOADING)) {
-////        addReply(c, shared.loadingerr);
-//        return REDIS_OK;
-//    }
-
-    /* Lua script too slow? Only allow a limited number of commands. */
-//    if (server.lua_timedout &&
-//          c->cmd->proc != authCommand &&
-//          c->cmd->proc != replconfCommand &&
-//        !(c->cmd->proc == shutdownCommand &&
-//          c->argc == 2 &&
-//          tolower(((char*)c->argv[1]->ptr)[0]) == 'n') &&
-//        !(c->cmd->proc == scriptCommand &&
-//          c->argc == 2 &&
-//          tolower(((char*)c->argv[1]->ptr)[0]) == 'k'))
-//    {
-//        flagTransaction(c);
-//        addReply(c, shared.slowscripterr);
-//        return REDIS_OK;
-//    }
-
-    /* Exec the command */
-//    if (c->flags & REDIS_MULTI &&
-//        c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
-//        c->cmd->proc != multiCommand && c->cmd->proc != watchCommand)
     if (req->cmd->proc != execCommand && req->cmd->proc != discardCommand &&
         req->cmd->proc != multiCommand && req->cmd->proc != watchCommand)
 
@@ -3935,9 +3897,9 @@ void call_(redisClient *c, int flags) {
     c->flags &= ~(REDIS_FORCE_AOF|REDIS_FORCE_REPL);
     redisOpArrayInit(&server.also_propagate);
     dirty = server.dirty;
-    start = ustime();
+//    start = ustime();
     c->cmd->proc(c);
-    duration = ustime()-start;
+//    duration = ustime()-start;
     dirty = server.dirty-dirty;
     if (dirty < 0) dirty = 0;
 
@@ -3961,11 +3923,11 @@ void call_(redisClient *c, int flags) {
     if (flags & REDIS_CALL_SLOWLOG && c->cmd->proc != execCommand) {
         char *latency_event = (c->cmd->flags & REDIS_CMD_FAST) ?
                               "fast-command" : "command";
-        latencyAddSampleIfNeeded(latency_event,duration/1000);
-        slowlogPushEntryIfNeeded(c->argv,c->argc,duration);
+//        latencyAddSampleIfNeeded(latency_event,duration/1000);
+//        slowlogPushEntryIfNeeded(c->argv,c->argc,duration);
     }
     if (flags & REDIS_CALL_STATS) {
-        c->cmd->microseconds += duration;
+//        c->cmd->microseconds += duration;
         c->cmd->calls++;
     }
 

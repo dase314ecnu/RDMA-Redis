@@ -618,7 +618,6 @@ static int cliReadReply(int output_raw_strings) {
 //        cliRefreshPrompt();
 //    }
 
-//    printf("fxxk 001 %s\n", res.buf+1);
     if (redisReaderFeed(context->reader,res.buf+1,strlen(res.buf)) != REDIS_OK) {
         __redisSetError(context,context->reader->err,context->reader->errstr);
         return REDIS_ERR;
@@ -660,6 +659,7 @@ static int cliReadReply(int output_raw_strings) {
 }
 
 static int cliSendCommand(int argc, char **argv, int repeat) {
+
     char *command = argv[0];
     size_t *argvlen;
     int j, output_raw;
@@ -742,18 +742,37 @@ static int cliSendCommand(int argc, char **argv, int repeat) {
 //        printf("post send request to the server3 %s\n ",res.buf);
 //        if (cliReadReply(output_raw) != REDIS_OK) {
 
+
         //rdma send request to the server
-        if (post_send(&res, IBV_WR_RDMA_WRITE))
+        if (post_send(&res, 0, IBV_WR_RDMA_WRITE_WITH_IMM, false))
         {
           fprintf(stderr, "failed to post SR 3\n");
           return REDIS_ERR;
         }
-        if (poll_completion(&res))
+        struct ibv_wc wc;
+        if (poll_completion(&res, 0,&wc))
+        {
+         fprintf(stderr, "poll completion failed 3\n");
+//         return REDIS_ERR;
+        }
+
+        if (poll_completion(&res, 0 ,&wc))
         {
          fprintf(stderr, "poll completion failed 3\n");
          return REDIS_ERR;
         }
-
+        else if(RDMA_REPLYING == res.buf[0])
+        {
+            if (post_receive(&res,0))
+            {
+                fprintf(stderr, "failed to post RR\n");
+                int rc = 1;
+            }
+             if (cliReadReply(1) != REDIS_OK) {
+                   exit(0);
+                   }
+              break;
+        }
 
         if(1)
         {
@@ -1009,10 +1028,10 @@ static int issueCommandRepeat(int argc, char **argv, long repeat) {
 
             /* If we still cannot send the command print error.
              * We'll try to reconnect the next time. */
-            if (cliSendCommand(argc,argv,repeat) != REDIS_OK) {
-                cliPrintContextError();
-                return REDIS_ERR;
-            }
+//            if (cliSendCommand(argc,argv,repeat) != REDIS_OK) {
+////                cliPrintContextError();
+//                return REDIS_ERR;
+//            }
          }
          /* Issue the command again if we got redirected in cluster mode */
          if (config.cluster_mode && config.cluster_reissue_command) {
@@ -1036,7 +1055,7 @@ static void repl(void) {
     char *line;
     int argc;
     sds *argv;
-    printf("repl is ok");
+//    printf("repl is ok");
 
     config.interactive = 1;
     linenoiseSetMultiLine(1);
@@ -1100,42 +1119,8 @@ static void repl(void) {
                     }
                 }
             }
-            while(1)
-            {
-                if(RDMA_REPLYING == res.buf[0])
-                {
-                    if (cliReadReply(1) != REDIS_OK) {
-                          exit(0);
-                       }
-                }
-//                 printf("The answer is %s/n", res.buf);
-
-                 break;
-            }
-
-
-
-//            printf("the rdma flag is %d", res.buf[0]);
-
-//            if (redisReaderFeed(context->reader,res.buf+1,strlen(res.buf)) != REDIS_OK) {
-//                __redisSetError(context,context->reader->err,context->reader->errstr);
-//                return REDIS_ERR;
-//            }
-//            redisReply *reply;
-//            redisGetReplyFromReader(context, (void**)&reply);
-//            sds out = NULL;
-//            out = cliFormatReplyRaw(reply);
-//            out = sdscat(out,"\n");
-
-//            fwrite(out,sdslen(out),1,stdout);
-//            sdsfree(out);
-
-
-
-//            printf("The answer is %d", reply->type);
-
-            /* Free the argument vector */
-            sdsfreesplitres(argv,argc);
+        /* Free the argument vector */
+        sdsfreesplitres(argv,argc);
         }
         /* linenoise() returns malloc-ed lines like readline() */
         free(line);
@@ -2294,120 +2279,23 @@ int main(int argc, char **argv) {
     config_rdma.ib_port = 1;
     config_rdma.gid_idx = -1;
     config_rdma.server_name = "10.11.6.113";
+    int msg_size =128;
+    char tt[msg_size];
 
-    resources_init(&res);
-
-    if(resources_create(&res))
+    long long avg_latency = 0;
+    int repeat_times = 100000;
+    memset(tt,"x",msg_size);
+    for(int i=0;i<repeat_times;i++)
     {
-      fprintf(stderr, "failed to create resources\n");
-      return REDIS_ERR;
+      char * buf;
+      long long c = ustime();
+      redisFormatCommand(&buf, "SET A %s",tt);
+//      memcpy(c1.querybuf,buf,strlen(buf));
+      long long cc = ustime() - c;
+      avg_latency += cc;
+//      processMultibulkBuffer(c);
     }
-
-    /* connect the QPs */
-    if (connect_qp(&res))
-    {
-        fprintf(stderr, "failed to connect QPs\n");
-        return REDIS_ERR;
-    }
-//    /* let the server post the sr */
-//    if (!config_rdma.server_name  )
-//        if (post_send(&res, IBV_WR_SEND))
-//        {
-//            fprintf(stderr, "failed to post sr\n");
-//            goto main_exit;
-//        }
-//    /* in both sides we expect to get a completion */
-//    if (poll_completion(&res))
-//    {
-//        fprintf(stderr, "poll completion failed\n");
-//        goto main_exit;
-//    }
-//    /* after polling the completion we have the message in the client buffer too */
-//    if (config_rdma.server_name)
-//        fprintf(stdout, "Message is: '%s'\n", res.buf);
-//    else
-//    {
-//        /* setup server buffer with read message */
-//        strcpy(res.buf, RDMAMSGR);
-//    }
-//    /* Sync so we are sure server side has data ready before client tries to read it */
-//    if (sock_sync_data_(res.sock, 1, "R", &temp_char)) /* just send a dummy char back and forth */
-//    {
-//        fprintf(stderr, "sync error before RDMA ops\n");
-//        rc = 1;
-//        goto main_exit;
-//    }
-//    /* Now the client performs an RDMA read and then write on server.
-//Note that the server has no idea these events have occured */
-//    if (config_rdma.server_name)
-//    {
-//        /* First we read contens of server's buffer */
-//        if (post_send(&res, IBV_WR_RDMA_READ))
-//        {
-//            fprintf(stderr, "failed to post SR 2\n");
-//            rc = 1;
-//            goto main_exit;
-//        }
-//        if (poll_completion(&res))
-//        {
-//            fprintf(stderr, "poll completion failed 2\n");
-//            rc = 1;
-//            goto main_exit;
-//        }
-//        fprintf(stdout, "Contents of server's buffer: '%s'\n", res.buf);
-//        /* Now we replace what's in the server's buffer */
-//        strcpy(res.buf, RDMAMSGW);
-//        fprintf(stdout, "Now replacing it with: '%s'\n", res.buf);
-//        if (post_send(&res, IBV_WR_RDMA_WRITE))
-//        {
-//            fprintf(stderr, "failed to post SR 3\n");
-//            rc = 1;
-//            goto main_exit;
-//        }
-//        if (poll_completion(&res))
-//        {
-//            fprintf(stderr, "poll completion failed 3\n");
-//            rc = 1;
-//            goto main_exit;
-//        }
-//    }
-//    /* Sync so server will know that client is done mucking with its memory */
-//    if (sock_sync_data_(res.sock, 1, "W", &temp_char)) /* just send a dummy char back and forth */
-//    {
-//        fprintf(stderr, "sync error after RDMA ops\n");
-//        rc = 1;
-//        goto main_exit;
-//    }
-//    if (!config_rdma.server_name)
-//        fprintf(stdout, "Contents of server buffer: '%s'\n", res.buf);
-//    rc = 0;
-//main_exit:
-//    if (resources_destroy(&res))
-//    {
-//        fprintf(stderr, "failed to destroy resources\n");
-//        rc = 1;
-//    }
-//    if (config_rdma.dev_name)
-//        free((char *)config_rdma.dev_name);
-//    fprintf(stdout, "\ntest result is %d\n", rc);
-//    return rc;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+     printf("xxxx %.2f \n",(float)avg_latency/repeat_times);
 
     //redis origin
     int firstarg;

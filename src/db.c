@@ -76,7 +76,9 @@ robj *lookupKeyWrite(redisDb *db, robj *key) {
 
 robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply) {
     robj *o = lookupKeyRead(c->db, key);
-    if (!o) addReply(c,reply);
+
+    if (!o) addReply_(c,reply,true);
+
     return o;
 }
 

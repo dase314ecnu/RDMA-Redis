@@ -29,7 +29,6 @@
 
 #include "redis.h"
 #include <math.h> /* isnan(), isinf() */
-
 /*-----------------------------------------------------------------------------
  * String Commands
  *----------------------------------------------------------------------------*/
@@ -62,9 +61,8 @@ static int checkStringLength(redisClient *c, long long size) {
 #define REDIS_SET_NX (1<<0)     /* Set if key not exists. */
 #define REDIS_SET_XX (1<<1)     /* Set if key exists. */
 
-void setGenericCommand(redisClient *c, int flags, robj *key, robj *val, robj *expire, int unit, robj *ok_reply, robj *abort_reply) {
+void setGenericCommand_(redisClient *c, int flags, robj *key, robj *val, robj *expire, int unit, robj *ok_reply, robj *abort_reply) {
     long long milliseconds = 0; /* initialized to avoid any harmness warning */
-
     if (expire) {
         if (getLongLongFromObjectOrReply(c, expire, &milliseconds, NULL) != REDIS_OK)
             return;
@@ -87,7 +85,37 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val, robj *ex
     notifyKeyspaceEvent(REDIS_NOTIFY_STRING,"set",key,c->db->id);
     if (expire) notifyKeyspaceEvent(REDIS_NOTIFY_GENERIC,
         "expire",key,c->db->id);
-    addReply(c, ok_reply ? ok_reply : shared.ok);
+    addReply_(c, ok_reply ? ok_reply : shared.ok, true);
+}
+void setGenericCommand(redisClient *c, int flags, robj *key, robj *val, robj *expire, int unit, robj *ok_reply, robj *abort_reply) {
+//    long long milliseconds = 0; /* initialized to avoid any harmness warning */
+//    if (expire) {
+//        if (getLongLongFromObjectOrReply(c, expire, &milliseconds, NULL) != REDIS_OK)
+//            return;
+//        if (milliseconds <= 0) {
+//            addReplyErrorFormat(c,"invalid expire time in %s",c->cmd->name);
+//            return;
+//        }
+//        if (unit == UNIT_SECONDS) milliseconds *= 1000;
+//    }
+
+//    if ((flags & REDIS_SET_NX && lookupKeyWrite(c->db,key) != NULL) ||
+//        (flags & REDIS_SET_XX && lookupKeyWrite(c->db,key) == NULL))
+//    {
+//        addReply(c, abort_reply ? abort_reply : shared.nullbulk);
+//        return;
+//    }
+//    setKey(c->db,key,val);
+
+
+    cuckoo_table_insert(server.tbl, &key->ptr, &val->ptr);
+//    server.dirty++;
+
+//    if (expire) setExpire(c->db,key,mstime()+milliseconds);
+//    notifyKeyspaceEvent(REDIS_NOTIFY_STRING,"set",key,c->db->id);
+//    if (expire) notifyKeyspaceEvent(REDIS_NOTIFY_GENERIC,
+//        "expire",key,c->db->id);
+    addReply_(c, ok_reply ? ok_reply : shared.ok, true);
 }
 
 /* SET key value [NX] [XX] [EX <seconds>] [PX <milliseconds>] */
@@ -126,7 +154,7 @@ void setCommand(redisClient *c) {
         }
     }
 
-    c->argv[2] = tryObjectEncoding(c->argv[2]);
+//    c->argv[2] = tryObjectEncoding(c->argv[2]);
     setGenericCommand(c,flags,c->argv[1],c->argv[2],expire,unit,NULL,NULL);
 }
 
@@ -146,18 +174,38 @@ void psetexCommand(redisClient *c) {
 }
 
 int getGenericCommand(redisClient *c) {
+//    printf("getGenericCommand\n");
+
     robj *o;
-
-    if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.nullbulk)) == NULL)
-        return REDIS_OK;
-
-    if (o->type != REDIS_STRING) {
-        addReply(c,shared.wrongtypeerr);
-        return REDIS_ERR;
-    } else {
-        addReplyBulk(c,o);
-        return REDIS_OK;
+    void *val;
+    if(cuckoo_table_find(server.tbl, &c->argv[1]->ptr, &val))
+    {
+//     printf("fxxk you %s n", (char *)val);
+     o = createObject(REDIS_STRING, val);
+     addReply_(c,o,true);
     }
+    else
+    {
+        addReply_(c,shared.nokeyerr,true);
+    }
+
+
+    return REDIS_OK;
+//    printf("fxxk you 01\n");
+
+
+//    if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.nullbulk)) == NULL)
+//        return REDIS_OK;
+
+//    if (o->type != REDIS_STRING) {
+//        addReply(c,shared.wrongtypeerr);
+//        printf("fxxk you \n");
+//        return REDIS_ERR;
+//    } else {
+//        addReplyBulk(c,o);
+//        printf("fxxk you \n");
+//        return REDIS_OK;
+//    }
 }
 
 void getCommand(redisClient *c) {
